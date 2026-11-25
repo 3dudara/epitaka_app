@@ -69,9 +69,31 @@ typedef TtsProgressCallback = void Function(int start, int end, String word);
 
 /// Max chars per utterance. Engines cap input (~4000); stay well below and
 /// only ever split on line boundaries, never mid-word.
-const int kTtsMaxUnitChars = 1500;
+const int kTtsMaxUnitChars = 3500;
 
-/// Char offsets of one line inside its unit's joined [TtsSpeakUnit.text].
+/// Classical Sinhala-Pāli e/o pronunciation rule:
+/// e and o are pronounced long (ඒ/ඕ) EXCEPT before a conjunct consonant (බැඳි අකුරු)
+/// or niggahīta/sanyaka, where they stay short (එ/ඔ). 1-to-1 char mapping preserves offsets.
+String prepareSinhalaPaliTts(String text) {
+  final re = RegExp(
+    r'([\u0D91\u0D94\u0DD9\u0DDC])(?![\u0D82\u0D83\u0D9F\u0DA6\u0DAC\u0DB3\u0DB9\u0DCA\u0DCF\u0DDF]|[\u0D9A-\u0DC6]\u0DCA)',
+  );
+  return text.replaceAllMapped(re, (m) {
+    switch (m.group(1)) {
+      case '\u0D91':
+        return '\u0D92';
+      case '\u0D94':
+        return '\u0D95';
+      case '\u0DD9':
+        return '\u0DDA';
+      case '\u0DDC':
+        return '\u0DDD';
+      default:
+        return m.group(0)!;
+    }
+  });
+}
+
 class TtsLineRange {
   final int lineId;
   final int start;
@@ -84,14 +106,6 @@ class TtsLineRange {
   });
 }
 
-/// One speakable utterance: consecutive lines sharing a voice.
-///
-/// [lineIndices] parallels [lineRanges] and holds each line's global index
-/// in the reader's `lines` list, so progress can sync the line-level
-/// `currentIndex` without changing any downstream consumer.
-/// [paliRoman] is the joined Roman source for Pāli units (null otherwise);
-///
-/// the engine re-encodes from it when needed.
 class TtsSpeakUnit {
   final int paraId;
   final bool isPali;
@@ -114,17 +128,9 @@ class TtsSpeakUnit {
   bool get isEmpty => text.trim().isEmpty;
 }
 
-/// Group [lines] into speakable units.
-///
-/// Consecutive lines with the same (paraId, isPali, language) merge into one
-/// unit. A voice/language switch (e.g. Pāli ↔ translation in "both" mode)
-/// always starts a new unit — one utterance can only carry one voice, so
-/// alternating content intentionally stays line-by-line. Empty lines are
-/// skipped.
-///
-/// Generic over the line type (with field extractors) so this file stays
-/// dependency-free: `tts_reading_provider.dart` owns `TtsLineItem` and would
-/// otherwise import-cycle. Pure.
+/// Group [lines] into whole-paragraph units up to [kTtsMaxUnitChars] (3500),
+/// merging Pāli + English + Sinhala together without splitting mid-paragraph
+/// (unless a single paragraph alone exceeds 3500 chars).
 List<TtsSpeakUnit> buildSpeakUnits<T>({
   required List<T> lines,
   required String Function(T) textOf,
@@ -133,68 +139,79 @@ List<TtsSpeakUnit> buildSpeakUnits<T>({
   required String? Function(T) languageOf,
   required String? Function(T) paliRomanOf,
 }) {
+  final paraGroups = <List<int>>[];
+  for (var i = 0; i < lines.length; i++) {
+    if (textOf(lines[i]).trim().isEmpty) continue;
+    final pId = paraIdOf(lines[i]);
+    if (paraGroups.isEmpty || paraIdOf(lines[paraGroups.last.first]) != pId) {
+      paraGroups.add([i]);
+    } else {
+      paraGroups.last.add(i);
+    }
+  }
+
   final units = <TtsSpeakUnit>[];
-  String? curKey;
   int curParaId = 0;
-  bool curIsPali = false;
-  String? curLanguage;
   final buf = StringBuffer();
   final ranges = <TtsLineRange>[];
   final indices = <int>[];
-  final romanBuf = StringBuffer();
+  String? unitLang;
 
   void flush() {
     if (ranges.isEmpty) return;
     units.add(
       TtsSpeakUnit(
         paraId: curParaId,
-        isPali: curIsPali,
-        language: curLanguage,
+        isPali: false,
+        language: unitLang ?? 'si',
         text: buf.toString(),
         lineRanges: List.of(ranges),
         lineIndices: List.of(indices),
-        paliRoman: curIsPali && romanBuf.isNotEmpty ? romanBuf.toString() : null,
+        paliRoman: null,
       ),
     );
     buf.clear();
     ranges.clear();
     indices.clear();
-    romanBuf.clear();
-    curKey = null;
+    unitLang = null;
   }
 
-  for (var i = 0; i < lines.length; i++) {
-    final line = lines[i];
-    final String text = textOf(line);
-    if (text.trim().isEmpty) continue;
-    final int paraId = paraIdOf(line);
-    final String roman = paliRomanOf(line) ?? '';
-    final bool isPali = roman.trim().isNotEmpty;
-    final String? language = languageOf(line);
-    final key = '$paraId|$isPali|${language ?? ''}';
-    final wouldExceed =
-        ranges.isNotEmpty && buf.length + 1 + text.length > kTtsMaxUnitChars;
-    if (curKey != key || wouldExceed) {
-      flush();
-      curKey = key;
-      curParaId = paraId;
-      curIsPali = isPali;
-      curLanguage = language;
+  String lineSpokenText(T line) {
+    final raw = textOf(line);
+    final roman = paliRomanOf(line) ?? '';
+    return roman.trim().isNotEmpty ? prepareSinhalaPaliTts(raw) : raw;
+  }
+
+  for (final group in paraGroups) {
+    var groupLen = 0;
+    for (var j = 0; j < group.length; j++) {
+      if (j > 0) groupLen += 1;
+      groupLen += lineSpokenText(lines[group[j]]).length;
     }
-    final start = buf.isEmpty ? 0 : buf.length + 1;
-    if (buf.isNotEmpty) buf.write(' ');
-    buf.write(text);
-    ranges.add(
-      TtsLineRange(
-        lineId: lineIdOf(line),
-        start: start,
-        end: buf.length,
-      ),
-    );
-    indices.add(i);
-    if (isPali) {
-      if (romanBuf.isNotEmpty) romanBuf.write(' ');
-      romanBuf.write(roman);
+
+    // Whole-paragraph boundary: if whole paragraph doesn't fit, flush first
+    if (ranges.isNotEmpty && buf.length + 1 + groupLen > kTtsMaxUnitChars) {
+      flush();
+    }
+
+    for (final idx in group) {
+      final line = lines[idx];
+      final spoken = lineSpokenText(line);
+      final lang = languageOf(line);
+      if (ranges.isNotEmpty && buf.length + 1 + spoken.length > kTtsMaxUnitChars) {
+        flush();
+      }
+      if (ranges.isEmpty) {
+        curParaId = paraIdOf(line);
+      }
+      if (lang == 'si' || unitLang == null) {
+        unitLang = lang ?? 'si';
+      }
+      final start = buf.isEmpty ? 0 : buf.length + 1;
+      if (buf.isNotEmpty) buf.write(' ');
+      buf.write(spoken);
+      ranges.add(TtsLineRange(lineId: lineIdOf(line), start: start, end: buf.length));
+      indices.add(idx);
     }
   }
   flush();

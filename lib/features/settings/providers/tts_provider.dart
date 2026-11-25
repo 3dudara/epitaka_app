@@ -1059,7 +1059,7 @@ class TtsNotifier extends StateNotifier<TtsPlaybackState> {
     romanText = stripPaliNumbers(romanText);
     switch (script) {
       case 'si':
-        return (text: sinhalaText, language: language);
+        return (text: prepareSinhalaPaliTts(sinhalaText), language: language);
       case 'hi':
         final devanagari = TextProcessor.convert(
           sinhalaText,
