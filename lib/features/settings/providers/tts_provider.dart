@@ -1044,6 +1044,26 @@ class TtsNotifier extends StateNotifier<TtsPlaybackState> {
     return out.trim();
   }
 
+  static String _prepareSinhalaPaliTts(String text) {
+    final re = RegExp(
+      r'([\u0D91\u0D94\u0DD9\u0DDC])(?![\u0D82\u0D83\u0D9F\u0DA6\u0DAC\u0DB3\u0DB9\u0DCA\u0DCF\u0DDF]|[\u0D9A-\u0DC6]\u0DCA)',
+    );
+    return text.replaceAllMapped(re, (m) {
+      switch (m.group(1)) {
+        case '\u0D91':
+          return '\u0D92';
+        case '\u0D94':
+          return '\u0D95';
+        case '\u0DD9':
+          return '\u0DDA';
+        case '\u0DDC':
+          return '\u0DDD';
+        default:
+          return m.group(0)!;
+      }
+    });
+  }
+
   static ({String text, String language}) paliSpeechText(
     String sinhalaText,
     String romanText, {
@@ -1059,7 +1079,7 @@ class TtsNotifier extends StateNotifier<TtsPlaybackState> {
     romanText = stripPaliNumbers(romanText);
     switch (script) {
       case 'si':
-        return (text: prepareSinhalaPaliTts(sinhalaText), language: language);
+        return (text: _prepareSinhalaPaliTts(sinhalaText), language: language);
       case 'hi':
         final devanagari = TextProcessor.convert(
           sinhalaText,
