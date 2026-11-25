@@ -27,17 +27,23 @@ jobs:
           DEV_KEYSTORE_BASE64: ${{ secrets.DEV_KEYSTORE_BASE64 }}
         run: |
           if [ -n "$DEV_KEYSTORE_BASE64" ]; then
-            echo "$DEV_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
-          else
+            echo "$DEV_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > android/app/upload-keystore.jks || true
+          fi
+          ALIAS=$(keytool -list -keystore android/app/upload-keystore.jks -storepass android123 2>/dev/null | grep "PrivateKeyEntry" | head -n 1 | cut -d, -f1 | tr -d '[:space:]' || true)
+          if [ -z "$ALIAS" ]; then
+            echo "Generating fresh keystore..."
+            rm -f android/app/upload-keystore.jks
+            ALIAS="epitakadev"
             keytool -genkeypair -v -keystore android/app/upload-keystore.jks \
-              -alias epitakadev -keyalg RSA -keysize 2048 -validity 10000 \
+              -alias "$ALIAS" -keyalg RSA -keysize 2048 -validity 10000 \
               -storepass android123 -keypass android123 \
               -dname "CN=EPitakaDev, OU=Dev, O=Custom, L=LK, ST=WP, C=LK"
           fi
+          echo "Using keystore alias: $ALIAS"
           cat <<EOF > android/key.properties
           storePassword=android123
           keyPassword=android123
-          keyAlias=epitakadev
+          keyAlias=$ALIAS
           storeFile=upload-keystore.jks
           EOF
 
